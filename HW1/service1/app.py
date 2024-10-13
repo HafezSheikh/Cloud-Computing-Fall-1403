@@ -1,9 +1,9 @@
+import io               
+import base64                           
+from PIL import Image
 import psycopg2
 import boto3
-from flask import Flask, flash, render_template, request, redirect, url_for 
-from werkzeug.utils import secure_filename
-from botocore.exceptions import NoCredentialsError
-from urllib.parse import quote
+from flask import Flask, render_template, request, jsonify, abort
 import re
 
 
@@ -18,13 +18,16 @@ def hello_world():
 
 @app.route('/requestService', methods = ['POST'])
 def requestService():
-    photo = request.get_json()['img']
+    if not request.json or 'img' not in request.json: 
+        abort(400)
+    image = request.get_json()['img']
     email = request.get_json()['email']
     emailIsValid = handleEmail(email)
-    imageURL = handleImage(photo)
+    filename = email + ".jpeg"
+    imageURL = handleImage(image,filename )
     if emailIsValid:
-        return 0
-    return 'Hello World'
+        return imageURL
+    return 'invalid request'
 
 
 @app.route('/trackRequest')
@@ -95,14 +98,12 @@ def handleEmail(email):
     valid = re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email)
     return valid
 
-def handleImage(file):
+def handleImage(file,filename):
 
-    imageURL = sendToObjectStorage(file)
-    return imageURL 
+    # convert it into bytes  
+    photo = base64.b64decode(file.encode('utf-8'))
 
-def sendToObjectStorage(file):
-
-    LIARA_ENDPOINT = "storage.c2.liara.space"
+    LIARA_ENDPOINT = "https://storage.c2.liara.space"
     LIARA_ACCESS_KEY = "aaq6bq7e4u9ercei"
     LIARA_SECRET_KEY = "81c9bf56-4dd8-4698-9cd8-a6248b6300fa"
     LIARA_BUCKET_NAME = "cchw1-9931097"
@@ -113,16 +114,14 @@ def sendToObjectStorage(file):
         aws_access_key_id=LIARA_ACCESS_KEY,
         aws_secret_access_key=LIARA_SECRET_KEY,
         
-)
-    s3.upload_fileobj(file, LIARA_BUCKET_NAME, file.filename)
-    filename_encoded = quote(file.filename)
-    permanent_url = f"https://{LIARA_BUCKET_NAME}.{LIARA_ENDPOINT.replace('https://', '')}/{filename_encoded}"
+)   
+    s3.upload_fileobj(io.BytesIO(photo),LIARA_BUCKET_NAME,filename)
+    # s3.upload_fileobj(file, LIARA_BUCKET_NAME, filename)
+    permanent_url = f"https://{LIARA_BUCKET_NAME}.{LIARA_ENDPOINT.replace('https://', '')}/{filename}"
     return permanent_url
+ 
 
 
 
-
-# main driver function
 if __name__ == '_apt install python3.10-venv_main__':
-
     app.run()
