@@ -26,13 +26,33 @@ def requestService():
     filename = email + ".jpeg"
     imageURL = handleImage(image,filename )
     if emailIsValid:
-        return imageURL
+        return insertIntoDatabase(email,imageURL)
     return 'invalid request'
 
 
 @app.route('/trackRequest')
 def trackRequest():
-    return 'Hello World'
+    conn = psycopg2.connect(
+        host="cchw1-9931097",
+        database="cchw1-9931097",
+        user="root",
+        password="nRocULwUkiK3sVS3QedxqYKw")
+
+    cur = conn.cursor()
+    cur.execute("""SELECT status FROM requests WHERE(id = %s)""",
+            (id)
+        )
+    
+
+    conn.commit()
+     # Fetch the data 
+    data = cur.fetchall() 
+  
+    # close the cursor and connection 
+    cur.close() 
+    conn.close() 
+  
+    return data 
 
 
 @app.route('/createDatabase')
@@ -49,18 +69,28 @@ def createDatabase():
                 CREATE TABLE requests (id SERIAL PRIMARY KEY,
                             email varchar (150) NOT NULL,
                             status varchar (50) NOT NULL,
-                            oldImageURL varchar (300),
-                            imageCaption varchar (200),
-                            newImageURL varchar (300),
+                            oldimageurl varchar (300),
+                            imagecaption varchar (200),
+                            newimageurl varchar (300),
                             date_added date DEFAULT CURRENT_TIMESTAMP);
                             """)
+    cur.execute("""INSERT INTO requests (email, status, oldimageurl)
+        VALUES (%s, %s, %s)
+        RETURNING *;""",
+            (
+            "dummy@dummy.com",
+            "dummy Status",
+            "dummyURL"
+            )
+        )
 
-    
+    conn.commit()
+
     data = cur.fetchall() 
     cur.close() 
     conn.close() 
   
-    return render_template('index.html', data=data) 
+    return data
 
 def insertIntoDatabase(email,imageURL):
     status = "pending"
@@ -72,9 +102,9 @@ def insertIntoDatabase(email,imageURL):
         password="nRocULwUkiK3sVS3QedxqYKw")
 
     cur = conn.cursor()
-    cur.execute("""INSERT INTO requests (email, status,oldImageURL)
-            VALUES (%s, %s)
-            RETURNING *;""",
+    cur.execute("""INSERT INTO requests (email, status, oldimageurl)
+        VALUES (%s, %s, %s)
+        RETURNING *;""",
             (
             email,
             status,
@@ -82,7 +112,7 @@ def insertIntoDatabase(email,imageURL):
             )
         )
     
-
+    conn.commit()
      # Fetch the data 
     data = cur.fetchall() 
   
@@ -90,7 +120,7 @@ def insertIntoDatabase(email,imageURL):
     cur.close() 
     conn.close() 
   
-    return render_template('index.html', data=data) 
+    return data
 
 def handleEmail(email):
 
