@@ -1,3 +1,5 @@
+import psycopg2
+
 import json
 import boto3
 import pika
@@ -5,132 +7,124 @@ import psycopg2
 from PIL import Image
 from flask import Flask, jsonify
 from io import BytesIO
-from urllib.parse import urlparse
+import requests
+import os
+import logging
+from threading import Thread
+import urllib
 
 app = Flask(__name__)
 
-LIARA_ENDPOINT = "https://storage.c2.liara.space"
-LIARA_ACCESS_KEY = "aaq6bq7e4u9ercei"
-LIARA_SECRET_KEY = "81c9bf56-4dd8-4698-9cd8-a6248b6300fa"
-LIARA_BUCKET_NAME = "cchw1-9931097"
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+LIARA_ENDPOINT = os.environ.get('LIARA_ENDPOINT')
+LIARA_ACCESS_KEY = os.environ.get('LIARA_ACCESS_KEY')
+LIARA_SECRET_KEY = os.environ.get('LIARA_SECRET_KEY')
+LIARA_BUCKET_NAME = os.environ.get('LIARA_BUCKET_NAME')
 
 s3 = boto3.client(
     "s3",
     endpoint_url=LIARA_ENDPOINT,
     aws_access_key_id=LIARA_ACCESS_KEY,
     aws_secret_access_key=LIARA_SECRET_KEY,
-        
-)   
-#RabbitMQ
-RABBITMQ_URL = 'amqps://enukjhfn:DB4_Sm1TxUXlYKui7UvYflILYpROtmlJ@hummingbird.rmq.cloudamqp.com/enukjhfn'
-rabbitmq_params = pika.URLParameters(RABBITMQ_URL)
+)
 
+# RabbitMQ
+url = 'amqps://enukjhfn:DB4_Sm1TxUXlYKui7UvYflILYpROtmlJ@hummingbird.rmq.cloudamqp.com/enukjhfn'
+rabbitmq_params = pika.URLParameters(url)
 
-#PostgreSQL
+# PostgreSQL
+
 conn = psycopg2.connect(
-    host="cchw1-9931097",
-    database="cchw1-9931097",
-    user="root",
-    password="nRocULwUkiK3sVS3QedxqYKw")
+    host = os.environ.get('DB_HOST'),
+    database = os.environ.get('DB_DATABASE'),
+    user = os.environ.get('DB_USER'),
+    port = '34870',
+    password = os.environ.get('DB_KEY'))
 
 cur = conn.cursor()
 
 
-
 def generate_caption(url):
     try:
-        response = s3.get_object(Bucket=LIARA_BUCKET_NAME, Key=url)
-        image_data = response['Body'].read()
+        with urllib.request.urlopen(url) as ur:
+            image = ur.read()
 
-        image = Image.open(BytesIO(image_data))
-        import requests
 
         API_URL = "https://api-inference.huggingface.co/models/Salesforce/blip-image-captioning-base"
-        headers = {"Authorization": "Bearer hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}
+        headers = {"Authorization": "Bearer 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"}
 
         response = requests.post(API_URL, headers=headers, data=image)
+        logging.info("Caption generated successfully.")
         return response.json()
 
-
     except Exception as e:
-        print(f"Error generating caption: {e}")
+        logging.error(f"Error generating caption: {e}")
         return None
 
 
 def update_image_caption(image_id, caption):
     try:
-        # 
+        
         cur.execute("""
             UPDATE requests 
             SET imagecaption = %s, status = 'ready' 
             WHERE id = %s;
         """, (caption, image_id))
         conn.commit()
-        print(f"Image {image_id} updated successfully with caption: {caption}")
+        logging.info(f"Image {image_id} updated successfully with caption: {caption}")
 
     except Exception as e:
         conn.rollback()
-        print(f"Error updating image {image_id}: {e}")
+        logging.error(f"Error updating image {image_id}: {e}")
+
 
 def process_message(ch, method, properties, body):
     try:
-        # پردازش پیام دریافتی از RabbitMQ
         message = json.loads(body)
-        image_id = message['image_id']
+        image_id = message['image_id'][0]
+        
+        logging.info(f"Processing image ID: {image_id}")
 
-        # خواندن URL عکس از دیتابیس
-        cur.execute("SELECT newimageurl FROM reequests WHERE id = %s;", (image_id,))
+        cur.execute("SELECT oldimageurl FROM requests WHERE id = %s;", (image_id))
         result = cur.fetchone()
+
         if result:
             image_url = result[0]
-            print(image_url)
-            # تولید کپشن برای عکس
+            logging.info(f"Image URL fetched: {image_url}")
             caption = generate_caption(image_url)
             if caption:
-                # آپدیت کپشن در دیتابیس و تغییر وضعیت
-                update_image_caption(image_id, caption)
-
-    except Exception as e:
-        print(f"Error processing message: {e}")
-
-@app.route('/status/<int:image_id>', methods=['GET'])
-def get_image_status(image_id):
-    try:
-        cur.execute("SELECT status, imagecaption FROM requests WHERE id = %s;", (image_id,))
-        result = cur.fetchone()
-        if result:
-            status, caption = result
-            return jsonify({'image_id': image_id, 'status': status, 'caption': caption}), 200
+                cap = caption[0].get('generated_text')
+                update_image_caption(image_id[0], cap)
         else:
-            return jsonify({'error': 'Image not found'}), 404
+            logging.warning(f"No image found for ID: {image_id}")
+
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        logging.error(f"Error processing message: {e}")
+
 
 def start_consumer():
-    # اتصال به RabbitMQ
+    logging.info("Starting RabbitMQ consumer thread...")
     connection = pika.BlockingConnection(rabbitmq_params)
     channel = connection.channel()
 
-    # اطمینان از وجود صف
-    channel.queue_declare(queue='image_processing')
-
-    # تنظیم listener برای دریافت پیام‌ها
     channel.basic_consume(
         queue='image_processing',
         on_message_callback=process_message,
         auto_ack=True
     )
 
-    print('Waiting for messages. To exit press CTRL+C')
-
-    # شروع حلقه برای گوش دادن به صف
+    logging.info("RabbitMQ consumer is now listening for messages...")
     channel.start_consuming()
 
-if __name__ == '__main__':
-    # Start the consumer in a separate thread so the Flask app can run in parallel
-    from threading import Thread
-    consumer_thread = Thread(target=start_consumer)
-    consumer_thread.start()
+
+
+# Start the consumer in a separate thread
+consumer_thread = Thread(target=start_consumer)
+consumer_thread.start()
+
+logging.info("Consumer thread has started.")
 
     # Run the Flask app
-    app.run()
+app.run()

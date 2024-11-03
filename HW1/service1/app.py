@@ -5,16 +5,11 @@ import psycopg2
 import boto3
 from flask import Flask, render_template, request, jsonify, abort
 import re
-
-
+import pika
+import os
+import json
 
 app = Flask(__name__)
-
-
-@app.route('/')
-def hello_world():
-    return 'Hello World'
-
 
 @app.route('/requestService', methods = ['POST'])
 def requestService():
@@ -23,45 +18,49 @@ def requestService():
     image = request.get_json()['img']
     email = request.get_json()['email']
     emailIsValid = handleEmail(email)
-    filename = email + ".jpeg"
+    import time
+    timestr = time.strftime("%Y%m%d-%H%M%S")    
+    filename = timestr
     imageURL = handleImage(image,filename )
     if emailIsValid:
-        return insertIntoDatabase(email,imageURL)
+        id = insertIntoDatabase(email,imageURL)
+        if(id):
+            insertIntoRabbitMQ(id)
+            return (id) 
+
     return 'invalid request'
 
 
-@app.route('/trackRequest')
-def trackRequest():
+@app.route('/status/<int:image_id>', methods=['GET'])
+def get_image_status(image_id):
     conn = psycopg2.connect(
-        host="cchw1-9931097",
-        database="cchw1-9931097",
-        user="root",
-        password="nRocULwUkiK3sVS3QedxqYKw")
+        host = os.environ.get('DB_HOST'),
+        database = os.environ.get('DB_DATABASE'),
+        user = os.environ.get('DB_USER'),
+        password = os.environ.get('DB_KEY'))
 
     cur = conn.cursor()
-    cur.execute("""SELECT status FROM requests WHERE(id = %s)""",
-            (id)
-        )
-    
-
-    conn.commit()
-     # Fetch the data 
-    data = cur.fetchall() 
-  
-    # close the cursor and connection 
-    cur.close() 
-    conn.close() 
-  
-    return data 
-
+    try:
+        cur.execute("SELECT status, imagecaption FROM requests WHERE id = %s;", (image_id,))
+        conn.commit()
+        result = cur.fetchone()
+        if result:
+            status, caption = result
+            return jsonify({'image_id': image_id, 'status': status, 'caption': caption}), 200
+        else:
+            return jsonify({'error': 'Image not found'}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/createDatabase')
 def createDatabase():
     conn = psycopg2.connect(
-        host="cchw1-9931097",
-        database="cchw1-9931097",
-        user="root",
-        password="nRocULwUkiK3sVS3QedxqYKw")
+
+        host = os.environ.get('DB_HOST'),
+        database = os.environ.get('DB_DATABASE'),
+        user = os.environ.get('DB_USER'),
+        password = os.environ.get('DB_KEY')
+        )
 
     cur = conn.cursor()
     cur.execute("""DROP TABLE IF EXISTS requests;""")
@@ -96,15 +95,15 @@ def insertIntoDatabase(email,imageURL):
     status = "pending"
 
     conn = psycopg2.connect(
-        host="cchw1-9931097",
-        database="cchw1-9931097",
-        user="root",
-        password="nRocULwUkiK3sVS3QedxqYKw")
+        host = os.environ.get('DB_HOST'),
+        database = os.environ.get('DB_DATABASE'),
+        user = os.environ.get('DB_USER'),
+        password = os.environ.get('DB_KEY'))
 
     cur = conn.cursor()
     cur.execute("""INSERT INTO requests (email, status, oldimageurl)
         VALUES (%s, %s, %s)
-        RETURNING *;""",
+        RETURNING id;""",
             (
             email,
             status,
@@ -114,13 +113,21 @@ def insertIntoDatabase(email,imageURL):
     
     conn.commit()
      # Fetch the data 
-    data = cur.fetchall() 
-  
+    result = cur.fetchall() 
+    if result:
+            id = result
+            cur.close() 
+            conn.close() 
+            x = {"image_id":id}
+            s1 = json.dumps(x)
+
+
+            return s1
+    else:
+        return jsonify({'error': 'Image not found'}), 404
     # close the cursor and connection 
-    cur.close() 
-    conn.close() 
+
   
-    return data
 
 def handleEmail(email):
 
@@ -131,12 +138,11 @@ def handleEmail(email):
 def handleImage(file,filename):
 
     # convert it into bytes  
-    photo = base64.b64decode(file.encode('utf-8'))
+    LIARA_ENDPOINT = os.environ.get('LIARA_ENDPOINT')
+    LIARA_ACCESS_KEY = os.environ.get('LIARA_ACCESS_KEY')
+    LIARA_SECRET_KEY = os.environ.get('LIARA_SECRET_KEY')
+    LIARA_BUCKET_NAME = os.environ.get('LIARA_BUCKET_NAME')
 
-    LIARA_ENDPOINT = "https://storage.c2.liara.space"
-    LIARA_ACCESS_KEY = "aaq6bq7e4u9ercei"
-    LIARA_SECRET_KEY = "81c9bf56-4dd8-4698-9cd8-a6248b6300fa"
-    LIARA_BUCKET_NAME = "cchw1-9931097"
 
     s3 = boto3.client(
         "s3",
@@ -145,11 +151,24 @@ def handleImage(file,filename):
         aws_secret_access_key=LIARA_SECRET_KEY,
         
 )   
-    s3.upload_fileobj(io.BytesIO(photo),LIARA_BUCKET_NAME,filename)
+    img_bytes = base64.b64decode(file.encode('utf-8'))
+    s3.upload_fileobj(io.BytesIO(img_bytes),LIARA_BUCKET_NAME,filename)
     # s3.upload_fileobj(file, LIARA_BUCKET_NAME, filename)
     permanent_url = f"https://{LIARA_BUCKET_NAME}.{LIARA_ENDPOINT.replace('https://', '')}/{filename}"
     return permanent_url
  
+def insertIntoRabbitMQ(jsonObj):
+    url = os.environ.get('CLOUDAMQP_URL')
+    params = pika.URLParameters(url)
+    connection = pika.BlockingConnection(params)
+    channel = connection.channel() # start a channel
+    # channel.queue_declare(queue='image_processing') # Declare a queue
+    channel.basic_publish(exchange='',
+                      routing_key='image_processing',
+                      body=jsonObj)
+    return "done"
+
+
 
 
 
