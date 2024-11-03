@@ -1,0 +1,25 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - API_KEY=7LvAY1VGnqCEayiQL04YFw==2Y9sSYh8ExXChGS1
+      - CACHE_TTL=300
+    networks:
+      - app-network
+    depends_on:
+      - redis
+
+  redis:
+    image: ghcr.io/aut-cloud-computing-fall-2024/redis:latest
+    networks:
+      - app-network
+    volumes:
+      - redis-data:/data
+
+networks:
+  app-network:
+
+volumes:
+  redis-data:
